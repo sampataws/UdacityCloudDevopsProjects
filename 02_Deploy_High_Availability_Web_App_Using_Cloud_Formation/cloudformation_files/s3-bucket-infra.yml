@@ -1,0 +1,24 @@
+Description: >
+    Made by Sampat Kumar Budankayala for Cloud DevOps Nanodegree 2nd project.
+    Upload ssh key into BucketForBastion to access Udagram servers.
+    Upload landing page template into BucketForUdagram.
+
+Parameters:
+    EnvironmentName:
+        Description: An environment name.
+        Type: String
+
+Resources:
+    BucketForUdagram:
+        Type: AWS::S3::Bucket
+        Properties:
+          BucketName: udacity-devops-bucket-forwebapp-project-sampat-lwj
+          AccessControl: PublicRead
+        DeletionPolicy: Delete
+
+    BucketForBastion:
+        Type: AWS::S3::Bucket
+        Properties:
+          BucketName: udacity-devops-bucket-forbastion-project-sampat-lwj
+          AccessControl: Private
+        DeletionPolicy: Delete

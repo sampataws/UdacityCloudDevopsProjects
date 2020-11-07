@@ -1,0 +1,119 @@
+Description: >
+  Bastion Servers Template. a stack on the Baseinfra stack
+
+Parameters:
+  EnvironmentName:
+    Description: Name for being used as a prefix for all resources
+    Type: String
+
+  MyIP:
+    Description: IP address allowed to use bastion host
+    Type: String
+    Default: 103.74.111.116/32
+
+  BucketForSSH:
+    Description: Name of S3 bucket for storing ssh key
+    Type: String
+    Default: udacity-devops-project-lwj
+
+  KeyForBastion:
+    Description: Key to access from bastion to Udagram servers
+    Type: "AWS::EC2::KeyPair::KeyName"
+    Default: Udacity_To_WebServers
+
+  KeyForLocalPC:
+    Description: Key to access from local to bastion
+    Type: "AWS::EC2::KeyPair::KeyName"
+    Default: Udacity_To_Bastion
+
+Resources:
+  BastionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: "/"
+
+  BastionPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: fullAccess
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: "s3:*"
+            Resource: "*"
+      Roles:
+        - !Ref BastionRole
+
+  BastionInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      Roles:
+        - !Ref BastionRole
+
+  BastionsSecGroup: # Bastions security group
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow SSH form local only
+      VpcId:
+        Fn::ImportValue:
+          !Sub "${EnvironmentName}-VPCID"
+      SecurityGroupIngress: # Allow the webservers to use port 22 (SSH) for inbound traffic
+      - IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+        CidrIp: !Sub ${MyIP}
+      SecurityGroupEgress: # Allow the webservers to use unrestricted internet access
+      - IpProtocol: tcp
+        FromPort: 0
+        ToPort: 65535
+        CidrIp: 0.0.0.0/0
+
+  BastionsLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          sudo yum update -y
+          cd /home/ec2-user
+          aws s3 cp s3://${BucketForSSH}/${KeyForBastion}.pem /home/ec2-user
+          chmod 400 ${KeyForBastion}.pem
+      ImageId: ami-01460aa81365561fe # Amazon Linux AMI 2018.03.0 (HVM), SSD Volume Type
+      IamInstanceProfile: !Ref BastionInstanceProfile
+      KeyName: !Sub ${KeyForLocalPC}
+      SecurityGroups:
+      - Ref: BastionsSecGroup
+      InstanceType: t2.micro
+      BlockDeviceMappings:
+      - DeviceName: "/dev/sdk"
+        Ebs:
+          VolumeSize: '10'
+
+  BastionsGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      LaunchConfigurationName:
+        Ref: "BastionsLaunchConfig"
+      MinSize: '2' # 2 Bastions for each private subnet
+      MaxSize: '2'
+      VPCZoneIdentifier:
+      - Fn::ImportValue: !Sub "${EnvironmentName}-PUB-NETS"
+
+
+Outputs:
+  BastionsSG:
+    Description: Reference of the security group of the bastions
+    Value: !Ref BastionsSecGroup
+    Export:
+      Name: !Sub ${EnvironmentName}-BastionsSG

@@ -1,0 +1,174 @@
+Description: >
+  Udagram Servers Template. a stack on the Baseinfra stack
+
+Parameters:
+  EnvironmentName:
+    Description: Name for being used as a prefix for all resources
+    Type: String
+
+  KeyForBastion:
+    Description: Key to access from bastion to Udagram servers
+    Type: "AWS::EC2::KeyPair::KeyName"
+    Default: Udacity_To_WebServers
+
+Resources:
+  UdagramServerRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/AmazonS3FullAccess"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "ec2.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+
+  UdagramInstanceProfile:
+    Type: "AWS::IAM::InstanceProfile"
+    Properties:
+      Path: "/"
+      Roles:
+        - Ref: "UdagramServerRole"
+
+  LBSecGroup: # Load balancer security group
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http to our load balancer
+      VpcId:
+        Fn::ImportValue:
+          !Sub "${EnvironmentName}-VPCID"
+      SecurityGroupIngress: # Allow the load balacner user port 80 (http) for inbound
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 0.0.0.0/0
+      SecurityGroupEgress: # Allow the load balacner user port 80 (http) for outbound
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: "Name"
+          Value: !Sub "${EnvironmentName}-LBSecGroup"
+
+  UdagramServerSecGroup: # Webservers security group
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow port 80 (http) and 22 (ssh) form local only
+      VpcId:
+        Fn::ImportValue:
+          !Sub "${EnvironmentName}-VPCID"
+      SecurityGroupIngress: # Allow the webservers to use port 80 (http) for inbound traffic
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+        SourceSecurityGroupId:
+          Fn::ImportValue:
+            !Sub "${EnvironmentName}-BastionsSG"
+      SecurityGroupEgress: # Allow the webservers to use unrestricted internet access
+      - IpProtocol: tcp
+        FromPort: 0
+        ToPort: 65535
+        CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: "Name"
+          Value: !Sub "${EnvironmentName}-UdagramServerSecGroup"
+
+  UdagramServersLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          apt-get update -y
+          apt-get install unzip awscli -y
+          apt-get install apache2 -y
+          systemctl start apache2.service
+          cd /var/www/html
+          sudo aws s3 cp s3://udacity-devops-project-for-webapp-lwj/udacity.zip .
+          sudo unzip -o /var/www/html/udacity.zip -d /var/www/html
+          sudo systemctl restart apache2.service
+
+      ImageId: ami-06d51e91cea0dac8d #Requirement: Ubuntu 18 image in US West (Oregon)
+      IamInstanceProfile: !Ref UdagramInstanceProfile
+      KeyName: !Sub ${KeyForBastion}
+      SecurityGroups:
+      - Ref: UdagramServerSecGroup
+      InstanceType: t2.medium #Requirement: At least 2vCPUs with 4GB RAM
+      BlockDeviceMappings:
+      - DeviceName: "/dev/sdk"
+        Ebs:
+          VolumeSize: '10' #Requirement: 10GB disk space
+
+  UdagramServersGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      LaunchConfigurationName:
+        Ref: "UdagramServersLaunchConfig"
+      MinSize: '4' #Requirement: At least 4 web servers
+      MaxSize: '6'
+      DesiredCapacity: '4'
+      VPCZoneIdentifier:
+      - Fn::ImportValue: !Sub "${EnvironmentName}-PRIV-NETS"
+      TargetGroupARNs:
+      - Ref: UdagramTargetGroup
+
+  UdagramLB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Subnets:
+      - Fn::ImportValue : !Sub ${EnvironmentName}-PUB1-SN
+      - Fn::ImportValue : !Sub ${EnvironmentName}-PUB2-SN
+      SecurityGroups:
+      - Ref: LBSecGroup
+
+  UdagramListener: # A listener for UdagramTargetGroup
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+      - Type: forward
+        TargetGroupArn: !Ref UdagramTargetGroup
+      LoadBalancerArn: !Ref UdagramLB
+      Port: '80'
+      Protocol: HTTP
+
+  UdagramListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+      - Type: forward
+        TargetGroupArn: !Ref 'UdagramTargetGroup'
+      Conditions:
+      - Field: path-pattern
+        Values: [/]
+      ListenerArn: !Ref 'UdagramListener'
+      Priority: 1
+
+  UdagramTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 35
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 30
+      HealthyThresholdCount: 2
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 5
+      VpcId:
+        Fn::ImportValue:
+          Fn::Sub: "${EnvironmentName}-VPCID"
+
+Outputs:
+  LoadBalancerDNSName:
+    Description: Reference of the DNS name of the load balancer
+    Value: !Join [ "", [ "http://", !GetAtt UdagramLB.DNSName ] ]
